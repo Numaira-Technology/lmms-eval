@@ -121,6 +121,24 @@ def test_split_projection_filters_by_opaque_sample_id():
     assert [row["sample_id"] for row in projected] == ["sample_002"]
 
 
+def test_question_type_filter_is_research_only(monkeypatch):
+    monkeypatch.setenv("PHYSICAL_CONFLICT_QUESTION_TYPES", "conflict_quarter_coverage, conflict_presence")
+
+    assert utils._question_type_filter_from_env(allow_partial=True) == {
+        "conflict_quarter_coverage",
+        "conflict_presence",
+    }
+    with pytest.raises(ValueError, match="only allowed"):
+        utils._question_type_filter_from_env(allow_partial=False)
+
+
+def test_question_type_filter_rejects_unknown_types(monkeypatch):
+    monkeypatch.setenv("PHYSICAL_CONFLICT_QUESTION_TYPES", "conflict_quarter_coverage,unknown")
+
+    with pytest.raises(ValueError, match="unknown question types"):
+        utils._question_type_filter_from_env(allow_partial=True)
+
+
 def test_prompt_contains_options_but_not_target_or_raw_path():
     rows, _, _, _ = utils._project_main_samples([_sample()], enforce_release_contract=False)
 

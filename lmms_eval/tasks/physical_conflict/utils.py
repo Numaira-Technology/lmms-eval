@@ -443,6 +443,21 @@ def _project_test_rows(model_inputs: list[dict[str, Any]], split_sample_ids: set
     return rows
 
 
+def _question_type_filter_from_env(*, allow_partial: bool) -> frozenset[str] | None:
+    raw = os.environ.get("PHYSICAL_CONFLICT_QUESTION_TYPES")
+    if raw is None or not raw.strip():
+        return None
+    if not allow_partial:
+        raise ValueError("PHYSICAL_CONFLICT_QUESTION_TYPES is only allowed when PHYSICAL_CONFLICT_ALLOW_PARTIAL=1.")
+    selected = frozenset(part.strip() for part in raw.split(",") if part.strip())
+    unknown = selected - QUESTION_TYPES
+    if unknown:
+        raise ValueError(f"PHYSICAL_CONFLICT_QUESTION_TYPES contains unknown question types: {sorted(unknown)}.")
+    if not selected:
+        raise ValueError("PHYSICAL_CONFLICT_QUESTION_TYPES must select at least one question type.")
+    return selected
+
+
 class PhysicalConflictTask(ConfigurableTask):
     """Load the frozen Task C release and expose its safe test projection."""
 
@@ -461,6 +476,7 @@ class PhysicalConflictTask(ConfigurableTask):
         allow_partial = _as_bool(os.environ.get("PHYSICAL_CONFLICT_ALLOW_PARTIAL"), default=False)
         strict = _as_bool(kwargs.get("strict"), default=True) and not allow_partial
         require_sidecar = _as_bool(kwargs.get("require_sidecar"), default=strict) and not allow_partial
+        question_type_filter = _question_type_filter_from_env(allow_partial=allow_partial)
 
         if qa_path is None:
             raise FileNotFoundError(f"Physical-conflict evaluation requires a Task C main JSONL.\n{_SETUP_HINT}")
@@ -500,6 +516,8 @@ class PhysicalConflictTask(ConfigurableTask):
         split_records = _read_jsonl(split_path, artifact_name="Task C test split") if split_path is not None else []
         split_ids = _split_sample_ids(split_records, valid_sample_ids=set(media_index), enforce_release_contract=strict) if split_records else set()
         rows = _project_test_rows(model_inputs, split_ids, enforce_release_contract=strict)
+        if question_type_filter is not None:
+            rows = [row for row in rows if row["question_type"] in question_type_filter]
         selected_qa_ids = {row["qa_id"] for row in rows}
         selected_sample_ids = {row["sample_id"] for row in rows}
 
