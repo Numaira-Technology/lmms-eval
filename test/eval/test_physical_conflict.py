@@ -139,6 +139,23 @@ def test_question_type_filter_rejects_unknown_types(monkeypatch):
         utils._question_type_filter_from_env(allow_partial=True)
 
 
+def test_quarter_prompt_variant_is_research_only(monkeypatch):
+    monkeypatch.setenv("PHYSICAL_CONFLICT_QUARTER_PROMPT_VARIANT", "timeline_checklist_v4")
+
+    guidance = utils._quarter_prompt_guidance_from_env(allow_partial=True)
+    assert "complete video timeline" in guidance
+    assert "re-check all four decisions" in guidance
+    with pytest.raises(ValueError, match="only allowed"):
+        utils._quarter_prompt_guidance_from_env(allow_partial=False)
+
+
+def test_quarter_prompt_variant_rejects_unknown_value(monkeypatch):
+    monkeypatch.setenv("PHYSICAL_CONFLICT_QUARTER_PROMPT_VARIANT", "unknown")
+
+    with pytest.raises(ValueError, match="must be one of"):
+        utils._quarter_prompt_guidance_from_env(allow_partial=True)
+
+
 def test_prompt_contains_options_but_not_target_or_raw_path():
     rows, _, _, _ = utils._project_main_samples([_sample()], enforce_release_contract=False)
 
