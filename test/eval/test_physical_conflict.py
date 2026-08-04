@@ -132,18 +132,23 @@ def test_prompt_contains_options_but_not_target_or_raw_path():
     assert "physical_conflict" not in prompt
 
 
-def test_single_choice_prediction_is_strict_option_id():
+def test_single_choice_prediction_accepts_unambiguous_choice_formats():
     sample_id = "sample_001"
     rows, targets, _, _ = utils._project_main_samples([_sample(sample_id)], enforce_release_contract=False)
     _install_targets(targets)
     doc = rows[0]
 
     assert utils.physical_conflict_normalize_prediction(doc, "B") == "B"
-    assert utils.physical_conflict_normalize_prediction(doc, "B.") is None
-    assert utils.physical_conflict_normalize_prediction(doc, "The answer is B") is None
+    assert utils.physical_conflict_normalize_prediction(doc, "B.") == "B"
+    assert utils.physical_conflict_normalize_prediction(doc, "B. Yes") == "B"
+    assert utils.physical_conflict_normalize_prediction(doc, "B. No") is None
+    assert utils.physical_conflict_normalize_prediction(doc, "The answer is B") == "B"
+    assert utils.physical_conflict_normalize_prediction(doc, "Yes") == "B"
+    assert utils.physical_conflict_normalize_prediction(doc, "Maybe B") is None
+    assert utils.physical_conflict_normalize_prediction(doc, "B or A") is None
 
 
-def test_multiple_choice_prediction_requires_json_array():
+def test_multiple_choice_prediction_accepts_unambiguous_id_sets():
     sample_id = "sample_001"
     sample = _sample(sample_id, source="ntu_cctv_fights", qa_pairs=[_quarter_qa(sample_id), _presence_qa(sample_id)])
     rows, targets, _, _ = utils._project_main_samples([sample], enforce_release_contract=False)
@@ -151,8 +156,26 @@ def test_multiple_choice_prediction_requires_json_array():
     doc = rows[0]
 
     assert utils.physical_conflict_normalize_prediction(doc, '["C","A"]') == ["A", "C"]
+    assert utils.physical_conflict_normalize_prediction(doc, "[C,A]") == ["A", "C"]
+    assert utils.physical_conflict_normalize_prediction(doc, "A and C") == ["A", "C"]
+    assert utils.physical_conflict_normalize_prediction(doc, "The answer is A, C") == ["A", "C"]
     assert utils.physical_conflict_normalize_prediction(doc, "AC") is None
+    assert utils.physical_conflict_normalize_prediction(doc, "A or C") is None
     assert utils.physical_conflict_normalize_prediction(doc, '["A","A"]') is None
+    assert utils.physical_conflict_normalize_prediction(doc, '[{"id":"A"}]') is None
+
+
+def test_quarter_prompt_requires_exhaustive_boundary_aware_check():
+    sample_id = "sample_001"
+    sample = _sample(sample_id, source="ntu_cctv_fights", qa_pairs=[_quarter_qa(sample_id), _presence_qa(sample_id)])
+    rows, _, _, _ = utils._project_main_samples([sample], enforce_release_contract=False)
+
+    prompt = utils.physical_conflict_doc_to_text(rows[0])
+
+    assert "make four separate yes/no decisions" in prompt
+    assert "may span several or all four quarters" in prompt
+    assert "crossing a quarter boundary" in prompt
+    assert "do not omit any yes decision" in prompt
 
 
 def test_multiple_choice_metrics_match_exact_set_semantics():
@@ -176,10 +199,14 @@ def test_numeric_metrics_use_selected_option_and_hidden_target():
     _install_targets(targets)
 
     correct = utils.physical_conflict_process_results(rows[0], ["B"])
+    formatted_correct = utils.physical_conflict_process_results(rows[0], ["B. 5.00"])
+    conflicting = utils.physical_conflict_process_results(rows[0], ["B. 2.00"])
     wrong = utils.physical_conflict_process_results(rows[0], ["A"])
 
     assert correct["Numeric_Option_MAE"] == 0.0
     assert correct["Numeric_Accuracy_at_0_5s"] == 1.0
+    assert formatted_correct["Numeric_Accuracy_at_0_5s"] == 1.0
+    assert conflicting["Overall_Exact_Accuracy"] == 0.0
     assert wrong["Numeric_Option_MAE"] == 3.0
     assert wrong["Numeric_Accuracy_at_0_5s"] == 0.0
 

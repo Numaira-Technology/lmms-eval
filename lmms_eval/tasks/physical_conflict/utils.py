@@ -12,6 +12,7 @@ import hashlib
 import json
 import math
 import os
+import re
 from collections import Counter
 from collections.abc import Iterable
 from pathlib import Path
@@ -589,7 +590,17 @@ def physical_conflict_doc_to_text(doc: dict[str, Any], lmms_eval_specific_kwargs
     option_lines = "\n".join(f"{option['id']}. {option['text']}" for option in doc["options"])
     body = f"Watch the full video carefully before answering.\n\nQuestion: {doc['question']}\n\nOptions:\n{option_lines}"
     if doc["answer_type"] == "multiple_choice":
-        post_prompt = kwargs.get("multiple_choice_post_prompt", 'Return only a JSON array of every applicable option ID, for example ["A","C"].')
+        if doc["question_type"] == "conflict_quarter_coverage":
+            body += (
+                "\n\nSilently make four separate yes/no decisions, one for each video quarter described by the options, "
+                "and include the option ID for every yes. A conflict may span several or all four quarters; do not "
+                "return only the most obvious quarter. Any overlap counts, including a brief conflict or one crossing "
+                "a quarter boundary."
+            )
+        post_prompt = kwargs.get(
+            "multiple_choice_post_prompt",
+            'Return only one JSON array containing every applicable option ID; do not omit any yes decision. Example: ["A","C"].',
+        )
     else:
         post_prompt = kwargs.get("single_choice_post_prompt", "Answer with only one option ID.")
     return f"{pre_prompt}{body}\n\n{post_prompt}".strip()
@@ -612,16 +623,72 @@ def physical_conflict_normalize_prediction(doc: dict[str, Any], raw_prediction: 
     target = _target_for_doc(doc)
     text = str(raw_prediction).strip()
     if target.answer_type == "single_choice":
-        return text if text in target.option_text else None
+        if text in target.option_text:
+            return text
+
+        normalized_text = text.rstrip(" .").casefold()
+        text_matches = [
+            option_id
+            for option_id, option_text in target.option_text.items()
+            if option_text.rstrip(" .").casefold() == normalized_text
+        ]
+        if len(text_matches) == 1:
+            return text_matches[0]
+
+        match = re.fullmatch(
+            r"(?i)\s*(?:(?:the\s+)?answer(?:\s+is|\s*[:=-])?\s*|option\s+)?"
+            r"([A-D])(?:\s*[.\)\]:,;=-]\s*(.*))?\s*",
+            text,
+        )
+        if match is None:
+            return None
+        option_id = match.group(1).upper()
+        if option_id not in target.option_text:
+            return None
+
+        suffix = (match.group(2) or "").strip().rstrip(" .").casefold()
+        if suffix:
+            suffix_matches = [
+                candidate_id
+                for candidate_id, option_text in target.option_text.items()
+                if option_text.rstrip(" .").casefold() == suffix
+            ]
+            if suffix_matches and suffix_matches != [option_id]:
+                return None
+        return option_id
+
     try:
         value = json.loads(text)
     except json.JSONDecodeError:
+        value = None
+    if isinstance(value, list):
+        option_ids = value
+    else:
+        candidate = re.sub(
+            r"(?i)^\s*(?:(?:the\s+)?answer(?:\s+is|\s*[:=-])?\s*)",
+            "",
+            text,
+        ).rstrip(" .")
+        candidate = re.sub(r"(?i)\band\b|&", ",", candidate)
+        if re.fullmatch(r'''[\s\[\]\(\)\{\}"'A-Da-d,;|/+\-]+''', candidate) is None:
+            return None
+        option_ids = [
+            option_id.upper()
+            for option_id in re.findall(
+                r"(?<![A-Za-z])[A-D](?![A-Za-z])",
+                candidate,
+                flags=re.IGNORECASE,
+            )
+        ]
+
+    if not option_ids or any(
+        not isinstance(option_id, str) or option_id not in target.option_text
+        for option_id in option_ids
+    ):
         return None
-    if not isinstance(value, list) or not value or len(set(value)) != len(value):
+    if len(set(option_ids)) != len(option_ids):
         return None
-    if any(not isinstance(option_id, str) or option_id not in target.option_text for option_id in value):
-        return None
-    return sorted(value, key=_OPTION_IDS.index)
+    return sorted(option_ids, key=_OPTION_IDS.index)
 
 
 def physical_conflict_process_results(doc: dict[str, Any], results: list[str]) -> dict[str, float]:
