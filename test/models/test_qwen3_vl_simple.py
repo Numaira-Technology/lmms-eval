@@ -1,11 +1,11 @@
 import types
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import torch
 
-from lmms_eval.models.simple.qwen3_vl import Qwen3_VL, _is_video_path
+from lmms_eval.models.simple.qwen3_vl import Qwen3_VL, _is_video_path, _load_model_with_optional_adapter
 
 
 class _FakeTokenizer:
@@ -57,6 +57,34 @@ class _VideoMetadata:
 
 
 class TestQwen3VLSimple(unittest.TestCase):
+    def test_optional_adapter_wraps_the_loaded_base_model(self):
+        model_class = MagicMock()
+        base_model = object()
+        adapted_model = object()
+        model_class.from_pretrained.return_value = base_model
+
+        with patch("peft.PeftModel.from_pretrained", return_value=adapted_model) as load_adapter:
+            observed = _load_model_with_optional_adapter(
+                model_class,
+                "base-model",
+                {"dtype": "bfloat16"},
+                "adapter-path",
+            )
+
+        self.assertIs(observed, adapted_model)
+        model_class.from_pretrained.assert_called_once_with("base-model", dtype="bfloat16")
+        load_adapter.assert_called_once_with(base_model, "adapter-path")
+
+    def test_optional_adapter_keeps_the_base_model_when_unset(self):
+        model_class = MagicMock()
+        base_model = object()
+        model_class.from_pretrained.return_value = base_model
+
+        observed = _load_model_with_optional_adapter(model_class, "base-model", {}, None)
+
+        self.assertIs(observed, base_model)
+        model_class.from_pretrained.assert_called_once_with("base-model")
+
     def test_is_video_path_supports_common_video_extensions(self):
         for path in ("clip.mp4", "clip.avi", "clip.mov", "clip.mkv", "clip.webm", "clip.mpeg", "clip.mpg", "clip.MPEG"):
             with self.subTest(path=path):

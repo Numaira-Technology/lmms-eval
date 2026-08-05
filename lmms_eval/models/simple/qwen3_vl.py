@@ -55,6 +55,15 @@ def _resolve_model_class(pretrained: str, is_moe: bool):
     return model_cls, dtype_key
 
 
+def _load_model_with_optional_adapter(model_cls, pretrained: str, model_kwargs: dict, adapter: Optional[str]):
+    model = model_cls.from_pretrained(pretrained, **model_kwargs)
+    if adapter:
+        from peft import PeftModel
+
+        model = PeftModel.from_pretrained(model, adapter)
+    return model
+
+
 @register_model("qwen3_vl")
 class Qwen3_VL(lmms):
     """
@@ -88,6 +97,7 @@ class Qwen3_VL(lmms):
         max_num_frames: int = 32,
         fps: Optional[float] = None,
         system_prompt: Optional[str] = "You are a helpful assistant.",
+        adapter: Optional[str] = None,
         interleave_visuals: Optional[bool] = False,
         enable_thinking: Optional[bool] = None,
         reasoning_prompt: Optional[str] = None,
@@ -120,7 +130,7 @@ class Qwen3_VL(lmms):
         if attn_implementation is not None:
             model_kwargs["attn_implementation"] = attn_implementation
 
-        self._model = model_cls.from_pretrained(pretrained, **model_kwargs).eval()
+        self._model = _load_model_with_optional_adapter(model_cls, pretrained, model_kwargs, adapter).eval()
         self.min_pixels = min_pixels
         self.max_pixels = max_pixels
         self.total_pixels = total_pixels
