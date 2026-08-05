@@ -99,6 +99,23 @@ DEFAULT_TEST_SPLIT_SHA256 = "46ebbaa4cbe39eaaed6990c6368951674d5038b9a544c1c01c4
 
 _OPTION_IDS = ("A", "B", "C", "D")
 _QUESTION_ORDER_INDEX = {question_type: index for index, question_type in enumerate(QUESTION_ORDER)}
+_DEFAULT_QUARTER_PROMPT_VARIANT = "exhaustive_boundary_v3"
+_QUARTER_PROMPT_GUIDANCE = {
+    _DEFAULT_QUARTER_PROMPT_VARIANT: (
+        "Silently make four separate yes/no decisions, one for each video quarter described by the options, "
+        "and include the option ID for every yes. A conflict may span several or all four quarters; do not "
+        "return only the most obvious quarter. Any overlap counts, including a brief conflict or one crossing "
+        "a quarter boundary."
+    ),
+    "timeline_checklist_v4": (
+        "Silently divide the complete video timeline into four equal-duration intervals. For each interval in "
+        "chronological order, make an independent yes/no decision: does any physical conflict occur at any "
+        "instant in this interval? Build the final array by adding every option whose interval is yes. Do not "
+        "choose only the onset, longest, most intense, or clearest interval. A continued conflict counts in "
+        "every interval it overlaps; even a brief overlap or a boundary crossing counts. Before responding, "
+        "re-check all four decisions and ensure no yes interval was omitted."
+    ),
+}
 _LEGAL_RELEASE_SEQUENCES = frozenset(
     {
         ("conflict_presence",),
@@ -443,6 +460,38 @@ def _project_test_rows(model_inputs: list[dict[str, Any]], split_sample_ids: set
     return rows
 
 
+def _question_type_filter_from_env(*, allow_partial: bool) -> frozenset[str] | None:
+    raw = os.environ.get("PHYSICAL_CONFLICT_QUESTION_TYPES")
+    if raw is None or not raw.strip():
+        return None
+    if not allow_partial:
+        raise ValueError("PHYSICAL_CONFLICT_QUESTION_TYPES is only allowed when PHYSICAL_CONFLICT_ALLOW_PARTIAL=1.")
+    selected = frozenset(part.strip() for part in raw.split(",") if part.strip())
+    unknown = selected - QUESTION_TYPES
+    if unknown:
+        raise ValueError(f"PHYSICAL_CONFLICT_QUESTION_TYPES contains unknown question types: {sorted(unknown)}.")
+    if not selected:
+        raise ValueError("PHYSICAL_CONFLICT_QUESTION_TYPES must select at least one question type.")
+    return selected
+
+
+def _quarter_prompt_guidance_from_env(*, allow_partial: bool) -> str:
+    raw = os.environ.get("PHYSICAL_CONFLICT_QUARTER_PROMPT_VARIANT")
+    if raw is None or not raw.strip():
+        return _QUARTER_PROMPT_GUIDANCE[_DEFAULT_QUARTER_PROMPT_VARIANT]
+    if not allow_partial:
+        raise ValueError(
+            "PHYSICAL_CONFLICT_QUARTER_PROMPT_VARIANT is only allowed when PHYSICAL_CONFLICT_ALLOW_PARTIAL=1."
+        )
+    variant = raw.strip()
+    if variant not in _QUARTER_PROMPT_GUIDANCE:
+        raise ValueError(
+            "PHYSICAL_CONFLICT_QUARTER_PROMPT_VARIANT must be one of "
+            f"{sorted(_QUARTER_PROMPT_GUIDANCE)}; observed {variant!r}."
+        )
+    return _QUARTER_PROMPT_GUIDANCE[variant]
+
+
 class PhysicalConflictTask(ConfigurableTask):
     """Load the frozen Task C release and expose its safe test projection."""
 
@@ -461,6 +510,7 @@ class PhysicalConflictTask(ConfigurableTask):
         allow_partial = _as_bool(os.environ.get("PHYSICAL_CONFLICT_ALLOW_PARTIAL"), default=False)
         strict = _as_bool(kwargs.get("strict"), default=True) and not allow_partial
         require_sidecar = _as_bool(kwargs.get("require_sidecar"), default=strict) and not allow_partial
+        question_type_filter = _question_type_filter_from_env(allow_partial=allow_partial)
 
         if qa_path is None:
             raise FileNotFoundError(f"Physical-conflict evaluation requires a Task C main JSONL.\n{_SETUP_HINT}")
@@ -500,6 +550,8 @@ class PhysicalConflictTask(ConfigurableTask):
         split_records = _read_jsonl(split_path, artifact_name="Task C test split") if split_path is not None else []
         split_ids = _split_sample_ids(split_records, valid_sample_ids=set(media_index), enforce_release_contract=strict) if split_records else set()
         rows = _project_test_rows(model_inputs, split_ids, enforce_release_contract=strict)
+        if question_type_filter is not None:
+            rows = [row for row in rows if row["question_type"] in question_type_filter]
         selected_qa_ids = {row["qa_id"] for row in rows}
         selected_sample_ids = {row["sample_id"] for row in rows}
 
@@ -591,12 +643,8 @@ def physical_conflict_doc_to_text(doc: dict[str, Any], lmms_eval_specific_kwargs
     body = f"Watch the full video carefully before answering.\n\nQuestion: {doc['question']}\n\nOptions:\n{option_lines}"
     if doc["answer_type"] == "multiple_choice":
         if doc["question_type"] == "conflict_quarter_coverage":
-            body += (
-                "\n\nSilently make four separate yes/no decisions, one for each video quarter described by the options, "
-                "and include the option ID for every yes. A conflict may span several or all four quarters; do not "
-                "return only the most obvious quarter. Any overlap counts, including a brief conflict or one crossing "
-                "a quarter boundary."
-            )
+            allow_partial = _as_bool(os.environ.get("PHYSICAL_CONFLICT_ALLOW_PARTIAL"), default=False)
+            body += f"\n\n{_quarter_prompt_guidance_from_env(allow_partial=allow_partial)}"
         post_prompt = kwargs.get(
             "multiple_choice_post_prompt",
             'Return only one JSON array containing every applicable option ID; do not omit any yes decision. Example: ["A","C"].',
