@@ -38,6 +38,8 @@ def _configure_openai_model(model, completions: _CaptureCompletions, *, model_ve
     model.prefix_hash_chars = 256
     model.max_frames_num = 1
     model.video_fps = None
+    model.pass_video_url = False
+    model.enable_thinking_kwarg = None
     model._rank = 0
     model.task_dict = {"demo": {"test": [{"id": 0}]}}
 
