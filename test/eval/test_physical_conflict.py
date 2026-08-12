@@ -87,11 +87,12 @@ def test_process_docs_flattens_questions_like_vstat():
 def test_prompt_and_target_use_flat_document():
     doc = _docs(_sample())[0]
 
-    prompt = utils.physical_conflict_doc_to_text(doc)
+    prompt = utils.physical_conflict_doc_to_text(doc, {"mcq_post_prompt": "Answer with only the option letter."})
 
     assert "Watch the full video carefully" in prompt
     assert "A. No" in prompt
     assert "B. Yes" in prompt
+    assert prompt.endswith("Answer with only the option letter.")
     assert utils.physical_conflict_doc_to_target(doc) == "B"
 
 
@@ -119,13 +120,17 @@ def test_multiple_choice_prediction_and_metrics():
     assert result["MultipleChoice_Macro_Recall"] == 0.5
 
 
-def test_numeric_metrics_use_selected_option_value():
+def test_numeric_prompt_target_and_metrics_match_vstat_flow():
     sample_id = "sample_001"
     doc = _docs(_sample(sample_id, qa_pairs=[_numeric_qa(sample_id)]))[0]
 
-    correct = utils.physical_conflict_process_results(doc, ["B"])
-    wrong = utils.physical_conflict_process_results(doc, ["A"])
+    prompt = utils.physical_conflict_doc_to_text(doc, {"numeric_post_prompt": "Answer with only a single number."})
+    correct = utils.physical_conflict_process_results(doc, ["5.0"])
+    wrong = utils.physical_conflict_process_results(doc, ["2"])
 
+    assert prompt.endswith("Answer with only a single number.")
+    assert utils.physical_conflict_doc_to_target(doc) == "5.0"
+    assert utils.physical_conflict_normalize_prediction(doc, "The answer is 5.0 seconds") == 5.0
     assert correct["Numeric_Option_MAE"] == 0.0
     assert correct["Numeric_Accuracy_at_0_5s"] == 1.0
     assert wrong["Numeric_Option_MAE"] == 3.0

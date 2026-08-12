@@ -24,6 +24,7 @@ _DEFAULT_QA_FILENAME = "clean_samples_1000_human_reviewed_with_qa.jsonl"
 _DEFAULT_SPLIT_FILENAME = "splits/test.jsonl"
 _DEFAULT_CACHE_DIR = "physical_conflict"
 _CHOICE_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+_NUMBER_PATTERN = re.compile(r"[-+]?(?:\d+(?:\.\d+)?|\.\d+)")
 
 NUMERIC_QUESTION_TYPES = {
     "first_conflict_start_time",
@@ -232,6 +233,12 @@ def physical_conflict_process_docs(dataset: Dataset) -> Dataset:
                 raise ValueError(f"Physical Conflict answer is not present in its options: {answer_ids}")
 
             question_type = str(qa.get("question_type") or "")
+            is_numeric = question_type in NUMERIC_QUESTION_TYPES
+            if is_numeric:
+                target_value = qa.get("target_value")
+                if target_value is None:
+                    raise ValueError(f"Numeric Physical Conflict question {question_type!r} requires target_value.")
+                answer_text = str(target_value)
             flat_docs.append(
                 {
                     "qa_id": str(qa.get("qa_id") or f"{sample_id}__{question_type}"),
@@ -240,6 +247,7 @@ def physical_conflict_process_docs(dataset: Dataset) -> Dataset:
                     "question_type": question_type,
                     "question": str(qa.get("question") or "").strip(),
                     "answer_type": answer_type,
+                    "is_numeric": is_numeric,
                     "is_multiple_choice": is_multiple_choice,
                     "options": options,
                     "answer_ids": answer_ids,
@@ -298,10 +306,12 @@ def physical_conflict_doc_to_text(doc: dict[str, Any], lmms_eval_specific_kwargs
     pre_prompt = kwargs.get("pre_prompt", "")
     option_lines = "\n".join(f"{option['id']}. {option['text']}" for option in doc["options"])
     body = f"Watch the full video carefully before answering.\n\nQuestion: {doc['question']}\n\nOptions:\n{option_lines}"
-    if doc["is_multiple_choice"]:
+    if doc["is_numeric"]:
+        post_prompt = kwargs.get("numeric_post_prompt", "")
+    elif doc["is_multiple_choice"]:
         post_prompt = kwargs.get("multiple_choice_post_prompt", 'Return only a JSON array of option IDs, for example ["A","C"].')
     else:
-        post_prompt = kwargs.get("single_choice_post_prompt", "Answer with only one option letter.")
+        post_prompt = kwargs.get("mcq_post_prompt", "")
     return f"{pre_prompt}{body}\n\n{post_prompt}".strip()
 
 
@@ -323,8 +333,15 @@ def _normalize_multiple_choice_prediction(doc: dict[str, Any], prediction: str) 
     return sorted(values, key=option_ids.index)
 
 
-def physical_conflict_normalize_prediction(doc: dict[str, Any], raw_prediction: str) -> str | list[str] | None:
+def _extract_last_number(text: str) -> float | None:
+    matches = _NUMBER_PATTERN.findall(str(text).replace(",", ""))
+    return float(matches[-1]) if matches else None
+
+
+def physical_conflict_normalize_prediction(doc: dict[str, Any], raw_prediction: str) -> str | float | list[str] | None:
     prediction = str(raw_prediction).strip()
+    if doc["is_numeric"]:
+        return _extract_last_number(prediction)
     if doc["is_multiple_choice"]:
         return _normalize_multiple_choice_prediction(doc, prediction)
 
@@ -337,6 +354,15 @@ def physical_conflict_normalize_prediction(doc: dict[str, Any], raw_prediction: 
 
 def physical_conflict_process_results(doc: dict[str, Any], results: list[str]) -> dict[str, float]:
     prediction = physical_conflict_normalize_prediction(doc, results[0] if results else "")
+    if doc["is_numeric"]:
+        absolute_error = abs(float(prediction) - float(doc["target_value"])) if isinstance(prediction, float) else float("inf")
+        within_tolerance = float(absolute_error <= float(doc.get("tolerance") or 0.5))
+        return {
+            "Overall_Exact_Accuracy": within_tolerance,
+            "Numeric_Accuracy_at_0_5s": within_tolerance,
+            "Numeric_Option_MAE": absolute_error,
+        }
+
     predicted_set = {prediction} if isinstance(prediction, str) else set(prediction or [])
     target_set = set(doc["answer_ids"])
     exact = float(prediction is not None and predicted_set == target_set)
@@ -356,14 +382,6 @@ def physical_conflict_process_results(doc: dict[str, Any], results: list[str]) -
     metrics["SingleChoice_Accuracy"] = exact
     if doc["question_type"] == "conflict_presence":
         metrics["Binary_Accuracy"] = exact
-    if doc["question_type"] in NUMERIC_QUESTION_TYPES:
-        within_tolerance = 0.0
-        if isinstance(prediction, str):
-            selected = next(option["text"] for option in doc["options"] if option["id"] == prediction)
-            absolute_error = abs(float(selected) - float(doc["target_value"]))
-            metrics["Numeric_Option_MAE"] = absolute_error
-            within_tolerance = float(absolute_error <= float(doc.get("tolerance") or 0.5))
-        metrics["Numeric_Accuracy_at_0_5s"] = within_tolerance
     return metrics
 
 

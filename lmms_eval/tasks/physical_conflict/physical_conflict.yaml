@@ -40,7 +40,8 @@ generation_kwargs:
 lmms_eval_specific_kwargs:
   default:
     pre_prompt: ""
-    single_choice_post_prompt: "Answer with only one option letter."
+    mcq_post_prompt: "Answer with only the option letter."
+    numeric_post_prompt: "Answer with only a single number."
     multiple_choice_post_prompt: 'Return only a JSON array of option IDs, for example ["A","C"].'
 dataset_kwargs:
   cache_dir: physical_conflict
