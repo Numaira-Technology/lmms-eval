@@ -1,6 +1,6 @@
 # Test Suite
 
-This directory contains framework tests plus focused coverage for the task set shipped by this fork: VSI-Bench and Physical Conflict.
+This directory contains framework tests plus focused coverage for the task set shipped by this fork: VSI-Bench, VSTAT, and Physical Conflict.
 
 ## Running the tests
 
@@ -15,7 +15,7 @@ python -m pytest \
 
 ## Retained task coverage
 
-- `test/eval/test_task_pipeline.py` verifies that only the Physical Conflict and VSI-Bench task variants are registered, their YAML files parse, and their utility modules import.
+- `test/eval/test_task_pipeline.py` verifies that only Physical Conflict, base VSI-Bench, and VSTAT are registered, their YAML files parse, and their utility modules import.
 - `test/eval/test_physical_conflict.py` validates Physical Conflict data integrity, prompt construction, prediction normalization, scoring, and opaque media resolution.
 - `test/eval/prompt_stability/` protects the multiple-choice and numerical-answer VSI-Bench prompts with golden snapshots.
 

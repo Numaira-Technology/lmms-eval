@@ -17,17 +17,16 @@ def task_manager():
 RETAINED_TASKS = {
     "physical_conflict",
     "vsibench",
-    "vsibench_debiased",
-    "vsibench_debiased_multiimage",
-    "vsibench_multiimage",
-    "vsibench_pruned",
+    "vstat",
 }
 
-YAML_SUBTASKS = RETAINED_TASKS - {"physical_conflict"}
+PYTHON_TASKS = {"physical_conflict", "vstat"}
+YAML_SUBTASKS = RETAINED_TASKS - PYTHON_TASKS
 
 TASK_UTILS = {
     "physical_conflict": "lmms_eval.tasks.physical_conflict.utils",
     "vsibench": "lmms_eval.tasks.vsibench.utils",
+    "vstat": "lmms_eval.tasks.vstat.utils",
 }
 
 
@@ -52,7 +51,7 @@ def _load_task_yaml(yaml_path: str) -> dict:
 def test_registry_contains_only_retained_tasks(task_manager):
     assert set(task_manager.all_tasks) == RETAINED_TASKS
     assert set(task_manager.all_subtasks) == YAML_SUBTASKS
-    assert task_manager.task_index["physical_conflict"]["type"] == "python_task"
+    assert all(task_manager.task_index[name]["type"] == "python_task" for name in PYTHON_TASKS)
     assert task_manager.all_groups == []
     assert task_manager.all_tags == []
 
