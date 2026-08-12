@@ -1,3 +1,0 @@
-task: robo_spatial_compatibility
-include: _default_template.yaml
-test_split: compatibility

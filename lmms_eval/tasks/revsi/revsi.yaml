@@ -1,6 +1,0 @@
-group: revsi
-task:
-- revsi_all_frame
-- revsi_64_frame
-- revsi_32_frame
-- revsi_16_frame

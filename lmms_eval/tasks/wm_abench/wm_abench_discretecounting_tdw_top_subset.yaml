@@ -1,4 +1,0 @@
-dataset_name: "DiscreteCounting_tdw_top_subset"
-tag: "wm_abench_subtasks"
-task: "wm_abench_discretecounting_tdw_top_subset"
-include: _default_template_yaml

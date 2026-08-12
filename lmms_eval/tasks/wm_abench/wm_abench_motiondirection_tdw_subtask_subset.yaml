@@ -1,4 +1,0 @@
-dataset_name: "MotionDirection_tdw_subtask_subset"
-tag: "wm_abench_subtasks"
-task: "wm_abench_motiondirection_tdw_subtask_subset"
-include: _default_template_yaml
