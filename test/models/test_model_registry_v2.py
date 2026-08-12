@@ -69,10 +69,10 @@ class TestRepresentativeManifestSemantics(unittest.TestCase):
         registry = ModelRegistryV2()
         registry.register_manifest(
             ModelManifest(
-                model_id="vllm",
-                simple_class_path="lmms_eval.models.simple.vllm.VLLM",
-                chat_class_path="lmms_eval.models.chat.vllm.VLLM",
-                aliases=("vllm_chat",),
+                model_id="gemini",
+                simple_class_path="lmms_eval.models.simple.gemini.Gemini",
+                chat_class_path="lmms_eval.models.chat.gemini.Gemini",
+                aliases=("gemini_api",),
             ),
         )
         registry.register_manifest(
@@ -80,18 +80,13 @@ class TestRepresentativeManifestSemantics(unittest.TestCase):
                 model_id="openai",
                 simple_class_path="lmms_eval.models.simple.openai.OpenAICompatible",
                 chat_class_path="lmms_eval.models.chat.openai.OpenAICompatible",
-                aliases=("openai_compatible", "openai_compatible_chat"),
-            ),
-        )
-        registry.register_manifest(
-            ModelManifest(
-                model_id="sglang",
-                chat_class_path="lmms_eval.models.chat.sglang.Sglang",
-                aliases=("sglang_runtime",),
+                aliases=("gpt", "molmo", "openai_compatible", "openai_compatible_chat"),
             ),
         )
 
-        self.assertEqual(registry.resolve("vllm_chat").model_id, "vllm")
+        self.assertEqual(registry.resolve("gemini_api").model_id, "gemini")
+        self.assertEqual(registry.resolve("gpt").model_id, "openai")
+        self.assertEqual(registry.resolve("molmo").model_id, "openai")
         self.assertEqual(
             registry.resolve("openai_compatible_chat").model_id,
             "openai",
@@ -100,27 +95,26 @@ class TestRepresentativeManifestSemantics(unittest.TestCase):
             registry.resolve("openai_compatible").model_id,
             "openai",
         )
-        self.assertEqual(registry.resolve("sglang_runtime").model_id, "sglang")
 
     def test_representative_force_simple_behavior(self):
         registry = ModelRegistryV2()
         registry.register_manifest(
             ModelManifest(
-                model_id="vllm",
-                simple_class_path="lmms_eval.models.simple.vllm.VLLM",
-                chat_class_path="lmms_eval.models.chat.vllm.VLLM",
+                model_id="qwen3_vl",
+                simple_class_path="lmms_eval.models.simple.qwen3_vl.Qwen3_VL",
+                chat_class_path="lmms_eval.models.chat.qwen3_vl.Qwen3_VL",
             ),
         )
         registry.register_manifest(
             ModelManifest(
-                model_id="sglang",
-                chat_class_path="lmms_eval.models.chat.sglang.Sglang",
+                model_id="gemini_chat_only",
+                chat_class_path="lmms_eval.models.chat.gemini.Gemini",
             ),
         )
 
-        self.assertEqual(registry.resolve("vllm").model_type, "chat")
-        self.assertEqual(registry.resolve("vllm", force_simple=True).model_type, "simple")
-        self.assertEqual(registry.resolve("sglang", force_simple=True).model_type, "chat")
+        self.assertEqual(registry.resolve("qwen3_vl").model_type, "chat")
+        self.assertEqual(registry.resolve("qwen3_vl", force_simple=True).model_type, "simple")
+        self.assertEqual(registry.resolve("gemini_chat_only", force_simple=True).model_type, "chat")
 
 
 ResolvedModel = _MODULE.ResolvedModel

@@ -6,6 +6,8 @@ Numaira's focused multimodal evaluation fork. It retains the lmms-eval runtime a
 - `vsibench`
 - `vstat`
 
+Supported model families are Molmo, Qwen, Cambrian-S, Gemini, and GPT. Molmo and GPT use the shared OpenAI-compatible backend and are available through the `molmo` and `gpt` model aliases.
+
 ## Install
 
 Python 3.10 or newer is required.
@@ -18,6 +20,12 @@ List the registered tasks:
 
 ```bash
 python -m lmms_eval tasks list
+```
+
+List the retained model backends and aliases:
+
+```bash
+python -m lmms_eval models --aliases
 ```
 
 ## Run an evaluation
