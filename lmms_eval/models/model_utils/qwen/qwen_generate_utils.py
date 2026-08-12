@@ -1,7 +1,6 @@
 # Copyright (c) Alibaba Cloud.
 #
-# This source code is licensed under the license found in the
-# LICENSE file in the root directory of this source tree.
+# Derived from Alibaba Cloud code; see the upstream source for license terms.
 
 """Generation support."""
 import warnings

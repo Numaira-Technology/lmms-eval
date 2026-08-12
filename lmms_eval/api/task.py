@@ -118,8 +118,7 @@ class TaskConfig(dict):
     test_split: str = None
     fewshot_split: str = None  # TODO: assert that this not None if num_fewshot > 0. (?) assert if this is same split as one evaling (?)
     full_docs: bool = False
-    # formatting / prompting options.
-    # see docs/advanced_task_guide.md for more info
+    # Formatting and prompting options.
     process_results_use_image: bool = False
     process_docs: Callable = None
     doc_to_visual: Union[Callable, str] = None
