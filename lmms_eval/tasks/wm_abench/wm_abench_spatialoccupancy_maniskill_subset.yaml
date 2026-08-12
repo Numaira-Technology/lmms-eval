@@ -1,4 +1,0 @@
-dataset_name: "SpatialOccupancy_maniskill_subset"
-tag: "wm_abench_subtasks"
-task: "wm_abench_spatialoccupancy_maniskill_subset"
-include: _default_template_yaml

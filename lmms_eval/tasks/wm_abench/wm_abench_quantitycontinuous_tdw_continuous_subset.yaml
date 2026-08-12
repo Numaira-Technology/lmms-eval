@@ -1,4 +1,0 @@
-dataset_name: "QuantityContinuous_tdw_continuous_subset"
-tag: "wm_abench_subtasks"
-task: "wm_abench_quantitycontinuous_tdw_continuous_subset"
-include: _default_template_yaml

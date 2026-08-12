@@ -1,4 +1,0 @@
-include: _default_yaml_template
-
-task: timelens_qvhighlights
-test_split: qvhighlights

@@ -1,4 +1,0 @@
-include: _default_template_yaml
-task: mvp_mini_temporal_reasoning
-dataset_name: temporal_reasoning
-test_split: mini

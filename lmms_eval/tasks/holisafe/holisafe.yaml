@@ -1,6 +1,0 @@
-task: "holisafe"
-tag:
-  - safety
-include: _default_template_yaml
-metadata:
-  version: 0.0

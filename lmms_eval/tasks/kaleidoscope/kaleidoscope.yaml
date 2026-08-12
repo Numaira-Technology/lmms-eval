@@ -1,4 +1,0 @@
-group: kaleidoscope
-task:
-  - kaleidoscope_multimodal
-  - kaleidoscope_text_only

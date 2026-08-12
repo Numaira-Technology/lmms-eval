@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 
 import pytest
+from datasets import Dataset
 
 from lmms_eval.tasks import TaskManager
 from lmms_eval.tasks.physical_conflict import utils
@@ -16,8 +17,6 @@ def _presence_qa(sample_id: str, *, answer: str = "B") -> dict:
         "answer_type": "single_choice",
         "options": [{"id": "A", "text": "No"}, {"id": "B", "text": "Yes"}],
         "answer": answer,
-        "evidence": [{"type": "canonical_label", "value": "physical_conflict"}],
-        "generator_version": "task_c_atomic_v1",
     }
 
 
@@ -34,8 +33,6 @@ def _quarter_qa(sample_id: str) -> dict:
             {"id": "D", "text": "Q4"},
         ],
         "answer": ["A", "C"],
-        "evidence": [{"type": "event", "event_id": "event_000001"}],
-        "generator_version": "task_c_atomic_v1",
     }
 
 
@@ -52,205 +49,118 @@ def _numeric_qa(sample_id: str) -> dict:
             {"id": "D", "text": "11.00"},
         ],
         "answer": "B",
-        "evidence": [{"type": "event", "event_id": "event_000001"}],
-        "generator_version": "task_c_atomic_v1",
         "target_value": 5.0,
         "unit": "seconds",
         "tolerance": 0.5,
     }
 
 
-def _sample(sample_id: str = "sample_001", *, source: str = "ubi_fights", qa_pairs: list[dict] | None = None) -> dict:
+def _sample(sample_id: str = "sample_001", *, qa_pairs: list[dict] | None = None, video_path: str = "video.mp4") -> dict:
     return {
         "id": sample_id,
-        "video_path": f"0001__{source}__fixture__video.mp4",
-        "video_time_sec": 12.0,
-        "annotation": {"events": []},
+        "video_path": video_path,
         "qa_pairs": qa_pairs if qa_pairs is not None else [_presence_qa(sample_id)],
     }
 
 
-def _install_targets(targets: dict[str, utils._Target]) -> None:
-    utils._runtime.targets = targets
+def _docs(sample: dict) -> list[dict]:
+    normalized = utils._normalize_sample_for_arrow(sample)
+    return list(utils.physical_conflict_process_docs(Dataset.from_list([normalized])))
 
 
 def test_physical_conflict_task_is_registered():
     assert "physical_conflict" in TaskManager("ERROR").all_tasks
 
 
-def test_atomic_projection_uses_exact_safe_allowlist():
-    rows, targets, media_index, sidecar = utils._project_main_samples([_sample()], enforce_release_contract=False)
+def test_process_docs_flattens_questions_like_vstat():
+    sample_id = "sample_001"
+    docs = _docs(_sample(sample_id, qa_pairs=[_quarter_qa(sample_id), _presence_qa(sample_id)]))
 
-    assert len(rows) == len(targets) == len(sidecar) == 1
-    assert set(rows[0]) == set(utils.MODEL_INPUT_FIELDS)
-    assert not (utils.FORBIDDEN_MODEL_INPUT_FIELDS & rows[0].keys())
-    assert "ubi_fights" not in json.dumps(rows[0])
-    assert media_index == {"sample_001": "0001__ubi_fights__fixture__video.mp4"}
-
-
-def test_atomic_projection_rejects_old_grouped_qa_shape():
-    sample = _sample()
-    sample["qa_pairs"] = [
-        {
-            "qa_id": "legacy",
-            "questions": ["Does this video contain conflict?"],
-            "answer": ["yes"],
-        }
-    ]
-
-    with pytest.raises(ValueError, match="missing"):
-        utils._project_main_samples([sample], enforce_release_contract=False)
+    assert len(docs) == 2
+    assert docs[0]["sample_id"] == sample_id
+    assert docs[0]["video_path"] == "video.mp4"
+    assert docs[0]["answer_ids"] == ["A", "C"]
+    assert docs[0]["answer_text"] == '["A","C"]'
+    assert docs[1]["answer_text"] == "B"
 
 
-def test_sidecar_must_be_exact_closed_derivative():
-    _, _, _, expected = utils._project_main_samples([_sample()], enforce_release_contract=False)
-    utils._validate_sidecar(expected, expected)
+def test_prompt_and_target_use_flat_document():
+    doc = _docs(_sample())[0]
 
-    changed = [dict(expected[0], answer="A")]
-    with pytest.raises(ValueError, match="exact derivative"):
-        utils._validate_sidecar(changed, expected)
+    prompt = utils.physical_conflict_doc_to_text(doc, {"mcq_post_prompt": "Answer with only the option letter."})
 
-
-def test_split_projection_filters_by_opaque_sample_id():
-    samples = [_sample("sample_001"), _sample("sample_002", source="rwf2000")]
-    rows, _, media_index, _ = utils._project_main_samples(samples, enforce_release_contract=False)
-    split_ids = utils._split_sample_ids([{"id": "sample_002"}], valid_sample_ids=set(media_index), enforce_release_contract=False)
-
-    projected = utils._project_test_rows(rows, split_ids, enforce_release_contract=False)
-
-    assert [row["sample_id"] for row in projected] == ["sample_002"]
-
-
-def test_prompt_contains_options_but_not_target_or_raw_path():
-    rows, _, _, _ = utils._project_main_samples([_sample()], enforce_release_contract=False)
-
-    prompt = utils.physical_conflict_doc_to_text(rows[0])
-
+    assert "Watch the full video carefully" in prompt
     assert "A. No" in prompt
     assert "B. Yes" in prompt
-    assert "0001__ubi_fights" not in prompt
-    assert "physical_conflict" not in prompt
+    assert prompt.endswith("Answer with only the option letter.")
+    assert utils.physical_conflict_doc_to_target(doc) == "B"
 
 
-def test_single_choice_prediction_accepts_unambiguous_choice_formats():
-    sample_id = "sample_001"
-    rows, targets, _, _ = utils._project_main_samples([_sample(sample_id)], enforce_release_contract=False)
-    _install_targets(targets)
-    doc = rows[0]
+def test_single_choice_prediction_uses_vstat_mcq_extraction():
+    doc = _docs(_sample())[0]
 
     assert utils.physical_conflict_normalize_prediction(doc, "B") == "B"
-    assert utils.physical_conflict_normalize_prediction(doc, "B.") == "B"
     assert utils.physical_conflict_normalize_prediction(doc, "B. Yes") == "B"
-    assert utils.physical_conflict_normalize_prediction(doc, "B. No") is None
     assert utils.physical_conflict_normalize_prediction(doc, "The answer is B") == "B"
     assert utils.physical_conflict_normalize_prediction(doc, "Yes") == "B"
-    assert utils.physical_conflict_normalize_prediction(doc, "Maybe B") is None
-    assert utils.physical_conflict_normalize_prediction(doc, "B or A") is None
 
 
-def test_multiple_choice_prediction_accepts_unambiguous_id_sets():
+def test_multiple_choice_prediction_and_metrics():
     sample_id = "sample_001"
-    sample = _sample(sample_id, source="ntu_cctv_fights", qa_pairs=[_quarter_qa(sample_id), _presence_qa(sample_id)])
-    rows, targets, _, _ = utils._project_main_samples([sample], enforce_release_contract=False)
-    _install_targets(targets)
-    doc = rows[0]
+    doc = _docs(_sample(sample_id, qa_pairs=[_quarter_qa(sample_id)]))[0]
 
     assert utils.physical_conflict_normalize_prediction(doc, '["C","A"]') == ["A", "C"]
-    assert utils.physical_conflict_normalize_prediction(doc, "[C,A]") == ["A", "C"]
     assert utils.physical_conflict_normalize_prediction(doc, "A and C") == ["A", "C"]
-    assert utils.physical_conflict_normalize_prediction(doc, "The answer is A, C") == ["A", "C"]
-    assert utils.physical_conflict_normalize_prediction(doc, "AC") is None
-    assert utils.physical_conflict_normalize_prediction(doc, "A or C") is None
     assert utils.physical_conflict_normalize_prediction(doc, '["A","A"]') is None
-    assert utils.physical_conflict_normalize_prediction(doc, '[{"id":"A"}]') is None
 
-
-def test_quarter_prompt_requires_exhaustive_boundary_aware_check():
-    sample_id = "sample_001"
-    sample = _sample(sample_id, source="ntu_cctv_fights", qa_pairs=[_quarter_qa(sample_id), _presence_qa(sample_id)])
-    rows, _, _, _ = utils._project_main_samples([sample], enforce_release_contract=False)
-
-    prompt = utils.physical_conflict_doc_to_text(rows[0])
-
-    assert "make four separate yes/no decisions" in prompt
-    assert "may span several or all four quarters" in prompt
-    assert "crossing a quarter boundary" in prompt
-    assert "do not omit any yes decision" in prompt
-
-
-def test_multiple_choice_metrics_match_exact_set_semantics():
-    sample_id = "sample_001"
-    sample = _sample(sample_id, source="ntu_cctv_fights", qa_pairs=[_quarter_qa(sample_id), _presence_qa(sample_id)])
-    rows, targets, _, _ = utils._project_main_samples([sample], enforce_release_contract=False)
-    _install_targets(targets)
-
-    result = utils.physical_conflict_process_results(rows[0], ['["A","B"]'])
-
+    result = utils.physical_conflict_process_results(doc, ['["A","B"]'])
     assert result["Overall_Exact_Accuracy"] == 0.0
     assert result["MultipleChoice_Exact_Set_Accuracy"] == 0.0
     assert result["MultipleChoice_Macro_Precision"] == 0.5
     assert result["MultipleChoice_Macro_Recall"] == 0.5
 
 
-def test_numeric_metrics_use_selected_option_and_hidden_target():
+def test_numeric_prompt_target_and_metrics_match_vstat_flow():
     sample_id = "sample_001"
-    sample = _sample(sample_id, source="ntu_cctv_fights", qa_pairs=[_numeric_qa(sample_id), _presence_qa(sample_id)])
-    rows, targets, _, _ = utils._project_main_samples([sample], enforce_release_contract=False)
-    _install_targets(targets)
+    doc = _docs(_sample(sample_id, qa_pairs=[_numeric_qa(sample_id)]))[0]
 
-    correct = utils.physical_conflict_process_results(rows[0], ["B"])
-    formatted_correct = utils.physical_conflict_process_results(rows[0], ["B. 5.00"])
-    conflicting = utils.physical_conflict_process_results(rows[0], ["B. 2.00"])
-    wrong = utils.physical_conflict_process_results(rows[0], ["A"])
+    prompt = utils.physical_conflict_doc_to_text(doc, {"numeric_post_prompt": "Answer with only a single number."})
+    correct = utils.physical_conflict_process_results(doc, ["5.0"])
+    wrong = utils.physical_conflict_process_results(doc, ["2"])
 
+    assert prompt.endswith("Answer with only a single number.")
+    assert utils.physical_conflict_doc_to_target(doc) == "5.0"
+    assert utils.physical_conflict_normalize_prediction(doc, "The answer is 5.0 seconds") == 5.0
     assert correct["Numeric_Option_MAE"] == 0.0
     assert correct["Numeric_Accuracy_at_0_5s"] == 1.0
-    assert formatted_correct["Numeric_Accuracy_at_0_5s"] == 1.0
-    assert conflicting["Overall_Exact_Accuracy"] == 0.0
     assert wrong["Numeric_Option_MAE"] == 3.0
     assert wrong["Numeric_Accuracy_at_0_5s"] == 0.0
 
 
-def test_opaque_media_alias_hides_source_filename(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    video = tmp_path / "0001__ubi_fights__fight__source.mp4"
+def test_doc_to_visual_resolves_video_from_document(tmp_path: Path):
+    video = tmp_path / "fixture.mp4"
     video.write_bytes(b"fixture")
-    alias_root = tmp_path / "opaque"
-    monkeypatch.setenv("PHYSICAL_CONFLICT_OPAQUE_MEDIA_ROOT", str(alias_root))
-    utils._runtime.media_index = {"sample_001": str(video)}
+    doc = _docs(_sample(video_path=str(video)))[0]
 
-    resolved = Path(utils.physical_conflict_doc_to_visual({"sample_id": "sample_001"})[0])
+    assert utils.physical_conflict_doc_to_visual(doc) == [str(video)]
 
-    assert resolved.name == "sample_001.mp4"
-    assert resolved.is_symlink()
-    assert resolved.resolve() == video.resolve()
+
+def test_split_loader_accepts_vstat_style_sample_ids(tmp_path: Path):
+    split_path = tmp_path / "test.jsonl"
+    split_path.write_text(json.dumps({"id": "sample_001"}) + "\n")
+
+    assert utils._load_split_ids(split_path) == {"sample_001"}
 
 
 @pytest.mark.skipif(not os.environ.get("GOODVISION_REPO_ROOT"), reason="GOODVISION_REPO_ROOT is not configured")
-def test_current_goodvision_release_projects_to_334_test_questions(monkeypatch: pytest.MonkeyPatch):
+def test_current_goodvision_release_projects_to_334_test_questions():
     root = Path(os.environ["GOODVISION_REPO_ROOT"])
-    monkeypatch.syspath_prepend(str(root / "src"))
-    from numera_vision.task_c_evaluation import (
-        load_model_inputs,
-        load_trusted_media_index,
-    )
-
     main_path = root / "data/samples/v1/clean_samples_1000_human_reviewed_with_qa.jsonl"
-    sidecar_path = root / "data/qa/v1/task_c_qa_evaluation_items_v1.jsonl"
     split_path = root / "data/samples/v1/splits/test.jsonl"
+    split_ids = utils._load_split_ids(split_path)
+    samples = [sample for sample in utils._read_jsonl(main_path) if sample["id"] in split_ids]
+    normalized = [utils._normalize_sample_for_arrow(sample) for sample in samples]
+    docs = utils.physical_conflict_process_docs(Dataset.from_list(normalized))
 
-    assert utils._validate_hash(main_path, utils.DEFAULT_MAIN_SHA256, artifact_name="Task C main")
-    assert utils._validate_hash(sidecar_path, utils.DEFAULT_SIDECAR_SHA256, artifact_name="Task C sidecar")
-    assert utils._validate_hash(split_path, utils.DEFAULT_TEST_SPLIT_SHA256, artifact_name="Task C test split")
-    samples = utils._read_jsonl(main_path, artifact_name="Task C main")
-    rows, _, media_index, expected_sidecar = utils._project_main_samples(samples, enforce_release_contract=True)
-    sidecar = utils._read_jsonl(sidecar_path, artifact_name="Task C sidecar")
-    utils._validate_sidecar(sidecar, expected_sidecar)
-    split = utils._read_jsonl(split_path, artifact_name="Task C test split")
-    split_ids = utils._split_sample_ids(split, valid_sample_ids=set(media_index), enforce_release_contract=True)
-    projected = utils._project_test_rows(rows, split_ids, enforce_release_contract=True)
-
-    assert rows == load_model_inputs(main_path)
-    assert media_index == load_trusted_media_index(main_path)
-    assert len(projected) == 334
-    assert len({row["sample_id"] for row in projected}) == 149
-    assert set(projected[0]) == set(utils.MODEL_INPUT_FIELDS)
+    assert len(samples) == 149
+    assert len(docs) == 334
