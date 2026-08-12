@@ -1,6 +1,5 @@
 from lmms_eval.models import MODEL_REGISTRY_V2, list_available_models
 
-
 EXPECTED_MODELS = {
     "cambrians",
     "gemini",
