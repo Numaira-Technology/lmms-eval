@@ -68,7 +68,10 @@ lmms_eval/tasks/hallusion_bench/hallusion_output_vd_model.json
 SimSun.ttf
 
 # Scripts and workspace (local-only)
-scripts/
+scripts/*
+!scripts/numaira/
+scripts/numaira/*
+!scripts/numaira/start_benchmark800.sh
 workspace/
 docs/plans/
 
