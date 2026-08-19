@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
-# 在 Vast.ai 服务器上准备或启动 Benchmark-800 的共享运行会话（Numaira）。
+# 在 Vast.ai 服务器上准备或启动最新 Benchmark-800（800 个媒体、1,501 道 QA）
+# 的共享运行会话（Numaira）。
 # 本脚本不会安装依赖、拉取代码、修改 SSH key，也不会自行启动模型评测。
 
 set -Eeuo pipefail
@@ -34,6 +35,7 @@ usage() {
   tmux attach -t benchmark800
 
 注意：
+  脚本按 GoodVision main 的 Benchmark-800 contract 校验 800 个媒体和 1,501 道 QA。
   --start 只创建准备好的终端会话，不会自动运行耗时的模型 benchmark。
 EOF
 }
@@ -54,6 +56,7 @@ OUTPUT_ROOT="${GOODVISION_OUTPUT_ROOT:-/workspace/results/benchmark800}"
 CONDA_ENV="${CONDA_ENV:-qwen3}"
 SESSION_NAME="${GOODVISION_TMUX_SESSION:-benchmark800}"
 SKIP_MEDIA_CHECK=0
+RESOLVED_CONDA_EXE=""
 
 while (($#)); do
   case "$1" in
@@ -122,14 +125,11 @@ if [[ "$MODE" == "attach" ]]; then
 fi
 
 activate_conda_env() {
-  if [[ "${CONDA_DEFAULT_ENV:-}" == "$CONDA_ENV" ]]; then
-    info "Conda 环境已激活：$CONDA_ENV"
-    return
-  fi
-
   local conda_exe=""
-  if command -v conda >/dev/null 2>&1; then
-    conda_exe="$(command -v conda)"
+  if [[ -n "${CONDA_EXE:-}" && -x "${CONDA_EXE:-}" ]]; then
+    conda_exe="$CONDA_EXE"
+  elif type -P conda >/dev/null 2>&1; then
+    conda_exe="$(type -P conda)"
   else
     local candidate
     for candidate in \
@@ -145,6 +145,11 @@ activate_conda_env() {
   fi
 
   [[ -n "$conda_exe" ]] || fail "未找到 Conda；请先创建共享环境 '$CONDA_ENV'。"
+  RESOLVED_CONDA_EXE="$conda_exe"
+  if [[ "${CONDA_DEFAULT_ENV:-}" == "$CONDA_ENV" ]]; then
+    info "Conda 环境已激活：$CONDA_ENV"
+    return
+  fi
   eval "$("$conda_exe" shell.bash hook)"
   conda activate "$CONDA_ENV" || fail "无法激活 Conda 环境 '$CONDA_ENV'。"
   info "已激活 Conda 环境：$CONDA_ENV"
@@ -157,15 +162,17 @@ command -v git >/dev/null 2>&1 || fail "未找到 git。"
 command -v nvidia-smi >/dev/null 2>&1 || fail "未找到 nvidia-smi。"
 
 REPO_ROOT="$(cd "$REPO_ROOT" 2>/dev/null && pwd)" || fail "无法进入 GoodVision 仓库：$REPO_ROOT"
-[[ -d "$REPO_ROOT/.git" ]] || fail "不是 Git checkout：$REPO_ROOT"
+git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+  || fail "不是 Git checkout：$REPO_ROOT"
 
 MANIFEST_PATH="$REPO_ROOT/data/manifests/goodvision_multicap_v2/benchmark_800.jsonl"
 QUESTIONS_PATH="$REPO_ROOT/data/qa/goodvision_multicap_v2/benchmark_800/questions.jsonl"
 PRIVATE_ANSWERS_PATH="$REPO_ROOT/data/private/goodvision_multicap_v2/benchmark_800/answers.jsonl"
-GENERATOR_PATH="$REPO_ROOT/scripts/generate_benchmark_800_qa.py"
+GENERATOR_PATH="$REPO_ROOT/scripts/generate_qa.py"
 
 [[ -f "$MANIFEST_PATH" ]] || fail "缺少 Benchmark-800 manifest。当前 checkout 可能不是最新 main：$MANIFEST_PATH"
 [[ -f "$QUESTIONS_PATH" ]] || fail "缺少公开问题文件：$QUESTIONS_PATH"
+[[ -f "$PRIVATE_ANSWERS_PATH" ]] || fail "缺少受限私有答案文件：$PRIVATE_ANSWERS_PATH"
 [[ -f "$GENERATOR_PATH" ]] || fail "缺少 QA 校验入口：$GENERATOR_PATH"
 
 if [[ "$SKIP_MEDIA_CHECK" == 0 ]]; then
@@ -182,7 +189,6 @@ export GOODVISION_MEDIA_ROOT="$MEDIA_ROOT"
 export GOODVISION_OUTPUT_ROOT="$OUTPUT_ROOT"
 export GOODVISION_BENCHMARK_MANIFEST="$MANIFEST_PATH"
 export GOODVISION_PUBLIC_QUESTIONS="$QUESTIONS_PATH"
-export GOODVISION_PRIVATE_ANSWERS="$PRIVATE_ANSWERS_PATH"
 
 info "GoodVision：$REPO_ROOT"
 info "Git commit：$(git -C "$REPO_ROOT" rev-parse --short=12 HEAD)"
@@ -191,10 +197,10 @@ nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader
 
 (
   cd "$REPO_ROOT"
-  python scripts/generate_benchmark_800_qa.py --check
+  python scripts/generate_qa.py --check
 )
 
-python - "$MANIFEST_PATH" "$QUESTIONS_PATH" "$MEDIA_ROOT" "$SKIP_MEDIA_CHECK" <<'PY'
+python - "$MANIFEST_PATH" "$QUESTIONS_PATH" "$PRIVATE_ANSWERS_PATH" "$MEDIA_ROOT" "$SKIP_MEDIA_CHECK" <<'PY'
 import hashlib
 import json
 import sys
@@ -203,8 +209,9 @@ from pathlib import Path
 
 manifest_path = Path(sys.argv[1])
 questions_path = Path(sys.argv[2])
-media_root = Path(sys.argv[3])
-skip_media_check = sys.argv[4] == "1"
+private_answers_path = Path(sys.argv[3])
+media_root = Path(sys.argv[4])
+skip_media_check = sys.argv[5] == "1"
 
 def read_jsonl(path: Path):
     rows = []
@@ -220,33 +227,48 @@ def read_jsonl(path: Path):
 
 members = read_jsonl(manifest_path)
 questions = read_jsonl(questions_path)
+private_answers = read_jsonl(private_answers_path)
 
-if len(members) != 800:
-    raise SystemExit(f"Expected 800 members, found {len(members)}")
-if len(questions) != 1413:
-    raise SystemExit(f"Expected 1413 public questions, found {len(questions)}")
-if len({row["video_id"] for row in members}) != 800:
+expected_members = 800
+expected_questions = 1501
+
+if len(members) != expected_members:
+    raise SystemExit(f"Expected {expected_members} members, found {len(members)}")
+if len(questions) != expected_questions:
+    raise SystemExit(
+        f"Expected {expected_questions} public questions, found {len(questions)}"
+    )
+if len(private_answers) != expected_questions:
+    raise SystemExit(
+        f"Expected {expected_questions} private answers, found {len(private_answers)}"
+    )
+if len({row["video_id"] for row in members}) != expected_members:
     raise SystemExit("Benchmark membership contains duplicate video_id values")
-if len({row["qa_id"] for row in questions}) != 1413:
+if len({row["qa_id"] for row in questions}) != expected_questions:
     raise SystemExit("Public questions contain duplicate qa_id values")
+if len({row["qa_id"] for row in private_answers}) != expected_questions:
+    raise SystemExit("Private answers contain duplicate qa_id values")
 
 member_ids = {row["video_id"] for row in members}
 question_video_ids = {row["video_id"] for row in questions}
 if question_video_ids != member_ids:
     raise SystemExit("Public questions and Benchmark-800 membership cover different videos")
+if {row["qa_id"] for row in private_answers} != {row["qa_id"] for row in questions}:
+    raise SystemExit("Public questions and private answers cover different qa_id values")
 
 capability_counts = Counter(row["capability"] for row in questions)
 expected_capability_counts = {
     "counting": 310,
     "event_recognition": 490,
-    "location_tracking": 298,
-    "temporal_questions": 315,
+    "location_tracking": 342,
+    "temporal_questions": 359,
 }
 if dict(capability_counts) != expected_capability_counts:
     raise SystemExit(f"Capability counts differ: {dict(capability_counts)}")
 
 print("[CHECK] Benchmark membership: 800 videos")
-print("[CHECK] Public QA: 1,413 questions")
+print("[CHECK] Public QA: 1,501 questions")
+print("[CHECK] Private answers: 1,501 answers")
 print(f"[CHECK] Capability counts: {dict(capability_counts)}")
 
 if skip_media_check:
@@ -368,11 +390,7 @@ print(f"[CHECK] PyTorch: {torch.__version__}; CUDA: {torch.version.cuda}")
 print(f"[CHECK] CUDA tensor: {x.item()}; GPU: {torch.cuda.get_device_name(0)}")
 PY
 
-if [[ -f "$PRIVATE_ANSWERS_PATH" ]]; then
-  info "已找到本地私有答案，可供评分端使用：$PRIVATE_ANSWERS_PATH"
-else
-  info "未找到本地私有答案；可先做模型推理，但正式评分前需要从受限远端恢复。"
-fi
+info "已校验受限私有答案；不会将其路径注入模型运行会话。"
 
 if [[ "$MODE" == "check-only" ]]; then
   info "全部检查通过；没有启动模型任务。"
@@ -392,15 +410,13 @@ SESSION_ENV="$OUTPUT_ROOT/session_env.sh"
   printf 'export GOODVISION_OUTPUT_ROOT=%q\n' "$GOODVISION_OUTPUT_ROOT"
   printf 'export GOODVISION_BENCHMARK_MANIFEST=%q\n' "$GOODVISION_BENCHMARK_MANIFEST"
   printf 'export GOODVISION_PUBLIC_QUESTIONS=%q\n' "$GOODVISION_PUBLIC_QUESTIONS"
-  printf 'export GOODVISION_PRIVATE_ANSWERS=%q\n' "$GOODVISION_PRIVATE_ANSWERS"
   printf 'cd %q\n' "$GOODVISION_ROOT"
   printf 'printf %q\n' "Benchmark-800 session ready. No model evaluation has started."
   printf 'exec bash -i\n'
 } >"$SESSION_ENV"
 chmod 700 "$SESSION_ENV"
 
-CONDA_EXE="$(command -v conda)"
-START_COMMAND="eval \"\$(\"$CONDA_EXE\" shell.bash hook)\" && conda activate $(printf '%q' "$CONDA_ENV") && exec bash $(printf '%q' "$SESSION_ENV")"
+START_COMMAND="eval \"\$(\"$RESOLVED_CONDA_EXE\" shell.bash hook)\" && conda activate $(printf '%q' "$CONDA_ENV") && exec bash $(printf '%q' "$SESSION_ENV")"
 tmux new-session -d -s "$SESSION_NAME" -c "$REPO_ROOT" "$START_COMMAND"
 
 info "已启动 tmux 会话：$SESSION_NAME"
